@@ -27,6 +27,11 @@
             max-width: 360px;
             text-align: center;
         }
+        .btn-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
         button {
             background-color: #007aff;
             color: white;
@@ -37,10 +42,17 @@
             border-radius: 8px;
             cursor: pointer;
             width: 100%;
-            margin-bottom: 20px;
-            transition: background 0.2s;
+            transition: background 0.2s, opacity 0.2s;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
         button:active { background-color: #0056b3; }
+        .btn-secondary {
+            background-color: #333333;
+        }
+        .btn-secondary:active { background-color: #444444; }
         .control-group {
             margin: 25px 0;
             text-align: left;
@@ -59,15 +71,6 @@
             outline: none;
             -webkit-appearance: none;
         }
-        .btn-row {
-            display: flex;
-            gap: 10px;
-        }
-        .btn-secondary {
-            background-color: #333333;
-            margin-bottom: 0;
-        }
-        .btn-secondary:active { background-color: #444444; }
         select {
             width: 100%;
             padding: 12px;
@@ -79,22 +82,24 @@
             border-radius: 8px;
             outline: none;
             cursor: pointer;
-            appearance: none; /* Removes native OS styling for consistency */
+            appearance: none;
             -webkit-appearance: none;
         }
         select:focus {
             border-color: #007aff;
             box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
         }
-
         #status { font-size: 12px; color: #888; margin-top: 15px; }
     </style>
 </head>
 <body>
 
 <div class="card">
-    <button id="connectBtn" onclick="connectBLE()">Connect</button>
-    
+    <div class="btn-row">
+        <button id="connectBtn" onclick="connectBLE()">Connect</button>
+        <button id="disconnectBtn" class="btn-secondary" onclick="disconnectBLE()" disabled>Disconnect</button>
+    </div>
+
     <div class="control-group">
         <label id="presetLabel">Preset:</label>
         <select id="presetDropdown" onchange="updatePreset(this.value)" disabled>
@@ -148,12 +153,12 @@
     </div>
 
     <div class="control-group">
-        <label id="feedRateLabel">Feed Rate: </label>
+        <label id="feedRateLabel">Feed Rate: 0.032%</label>
         <input type="range" id="feedRateSlider" min="1" max="10000" value="32" oninput="updateFeedRate(this.value)" disabled>
     </div>
 
     <div class="control-group">
-        <label id="killRateLabel">Kill Rate: </label>
+        <label id="killRateLabel">Kill Rate: 0.032%</label>
         <input type="range" id="killRateSlider" min="0" max="63" value="32" oninput="updateKillRate(this.value)" disabled>
     </div>
 
@@ -164,123 +169,145 @@
 let bleDevice = null;
 let controlCharacteristic = null;
 
-// Use the exact 128-bit UUID strings matching your S3 NimBLE configuration
-const SERVICE_UUID = '41424344-4546-4748-494a-4b4c4d4e4f50'; 
+const DEFAULT_SETTINGS = {
+    feedRate: 32,
+    killRate: 32,
+    spawnChance: 100,
+    preset: 0
+};
+
+const currentSettings = { ...DEFAULT_SETTINGS };
+
+const SERVICE_UUID = '41424344-4546-4748-494a-4b4c4d4e4f50';
 const CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f60';
+
+function formatPer10kPercent(rawValue) {
+    const value = Number(rawValue) || 0;
+    return `${(value / 1000).toFixed(3)}%`;
+}
+
+function setControlState(connected) {
+    const controls = [
+        document.getElementById('feedRateSlider'),
+        document.getElementById('killRateSlider'),
+        document.getElementById('spawnChanceDropdown'),
+        document.getElementById('presetDropdown')
+    ];
+
+    controls.forEach(control => {
+        control.disabled = !connected;
+    });
+
+    document.getElementById('connectBtn').disabled = connected;
+    document.getElementById('disconnectBtn').disabled = !connected;
+}
+
+function applyCurrentControlsToUI() {
+    document.getElementById('feedRateSlider').value = currentSettings.feedRate;
+    document.getElementById('killRateSlider').value = currentSettings.killRate;
+    document.getElementById('spawnChanceDropdown').value = String(currentSettings.spawnChance);
+    document.getElementById('presetDropdown').value = String(currentSettings.preset);
+
+    document.getElementById('feedRateLabel').innerText = `Feed Rate: ${formatPer10kPercent(currentSettings.feedRate)}`;
+    document.getElementById('killRateLabel').innerText = `Kill Rate: ${formatPer10kPercent(currentSettings.killRate)}`;
+}
+
+async function sendControlValue(command, value) {
+    if (!controlCharacteristic) {
+        return;
+    }
+
+    const safeValue = Math.max(0, Math.min(65535, Number(value) || 0));
+    const high = Math.floor(safeValue / 256);
+    const low = safeValue % 256;
+    const data = new Uint8Array([command, high, low]);
+
+    try {
+        await controlCharacteristic.writeValueWithoutResponse(data);
+    } catch (error) {
+        console.error('Write error:', error);
+    }
+}
 
 async function connectBLE() {
     const statusText = document.getElementById('status');
-    statusText.innerText = "Scanning...";
-    
+    statusText.innerText = 'Scanning...';
+
     try {
         bleDevice = await navigator.bluetooth.requestDevice({
             filters: [{ name: 'Cells-Remote' }],
             optionalServices: [SERVICE_UUID]
         });
 
-        statusText.innerText = "Device: Connecting...";
+        statusText.innerText = 'Device: Connecting...';
         const server = await bleDevice.gatt.connect();
         const service = await server.getPrimaryService(SERVICE_UUID);
         controlCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
 
-        statusText.innerText = "Device: Connected!";
-        document.getElementById('connectBtn').style.backgroundColor = "#34c759";
-        document.getElementById('connectBtn').innerText = "Connected";
-        
-        // Enable UI Controls
-        document.getElementById('feedRateSlider').disabled = false;
-        document.getElementById('killRateSlider').disabled = false;
-        document.getElementById('spawnChanceDropdown').disabled = false;
-        document.getElementById('presetDropdown').disabled = false;
-
+        statusText.innerText = 'Device: Connected!';
+        document.getElementById('connectBtn').style.backgroundColor = '#34c759';
+        document.getElementById('connectBtn').innerText = 'Connected';
+        setControlState(true);
+        applyCurrentControlsToUI();
+        await sendAllSettings();
         bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
-
     } catch (error) {
         console.error(error);
         statusText.innerText = `Device: Connection Failed [${error}]`;
     }
 }
 
+async function disconnectBLE() {
+    if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
+        bleDevice.gatt.disconnect();
+    } else {
+        onDisconnected();
+    }
+}
+
 function onDisconnected() {
-    document.getElementById('status').innerText = "Device: Disconnected";
-    document.getElementById('connectBtn').style.backgroundColor = "#007aff";
-    document.getElementById('connectBtn').innerText = "Connect";
-    document.getElementById('feedRateSlider').disabled = true;
-    document.getElementById('killRateSlider').disabled = true;
-    document.getElementById('spawnChanceDropdown').disabled = true;
-    document.getElementById('presetDropdown').disabled = true;
+    document.getElementById('status').innerText = 'Device: Disconnected';
+    document.getElementById('connectBtn').style.backgroundColor = '#007aff';
+    document.getElementById('connectBtn').innerText = 'Connect';
+    controlCharacteristic = null;
+    setControlState(false);
+}
+
+async function sendAllSettings() {
+    await sendControlValue(0x41, currentSettings.feedRate);
+    await sendControlValue(0x42, currentSettings.killRate);
+    await sendControlValue(0x43, currentSettings.spawnChance);
+    await sendControlValue(0x44, currentSettings.preset);
 }
 
 async function updateFeedRate(val) {
     const value = Number(val);
-    document.getElementById('feedRateLabel').innerText = `Feed Rate: ${value / 10000}`;
-    
-    if (!controlCharacteristic) {
-        return;
-    }
-    
-    const high = Math.floor(value / 256);
-    const low = value % 256;
-    const data = new Uint8Array([0x41, high, low]);
-
-    try {
-        await controlCharacteristic.writeValueWithoutResponse(data);
-    } catch (error) {
-        console.error("Write error:", error);
-    }
+    currentSettings.feedRate = value;
+    document.getElementById('feedRateLabel').innerText = `Feed Rate: ${formatPer10kPercent(value)}`;
+    await sendControlValue(0x41, value);
 }
 
 async function updateKillRate(val) {
     const value = Number(val);
-    document.getElementById('killRateLabel').innerText = `Kill Rate: ${value}`;
-    
-    if (!controlCharacteristic) {
-        return;
-    }
-
-    const high = Math.floor(value / 256);
-    const low = value % 256;
-    const data = new Uint8Array([0x42, high, low]);
-    
-    try {
-        await controlCharacteristic.writeValueWithoutResponse(data);
-    } catch (error) {
-        console.error("Write error:", error);
-    }
+    currentSettings.killRate = value;
+    document.getElementById('killRateLabel').innerText = `Kill Rate: ${formatPer10kPercent(value)}`;
+    await sendControlValue(0x42, value);
 }
 
 async function updateSpawnChance(val) {
-    if (!controlCharacteristic) {
-        return;
-    }
-
     const value = Number(val);
-    const high = Math.floor(value / 256);
-    const low = value % 256;
-    const data = new Uint8Array([0x43, high, low]);
-    
-    try {
-        await controlCharacteristic.writeValueWithoutResponse(data);
-    } catch (error) {
-        console.error("Write error:", error);
-    }
+    currentSettings.spawnChance = value;
+    await sendControlValue(0x43, value);
 }
-        
+
 async function updatePreset(val) {
-    if (!controlCharacteristic) {
-        return;
-    }
-    
     const value = Number(val);
-    const data = new Uint8Array([0x44, value]);
-    
-    try {
-        await controlCharacteristic.writeValueWithoutResponse(data);
-    } catch (error) {
-        console.error("Write error:", error);
-    }
+    currentSettings.preset = value;
+    await sendControlValue(0x44, value);
 }
 
+setControlState(false);
+applyCurrentControlsToUI();
 </script>
 </body>
 </html>
