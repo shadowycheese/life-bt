@@ -130,7 +130,7 @@
             <option value="150">1.50%</option>
             <option value="200">2.00%</option>
             <option value="250">2.50%</option>
-            <option value="300">3.00%%</option>
+            <option value="300">3.00%</option>
             <option value="500">5.00%</option>
             <option value="750">7.50%</option>
             <option value="1000">10.00%</option>
@@ -211,87 +211,73 @@ function onDisconnected() {
     document.getElementById('presetDropdown').disabled = true;
 }
 
-async function updateFeedRate(val) 
-{
-    document.getElementById('feedRateLabel').innerText = `Feed Rate: ${val/10000}`;
+async function updateFeedRate(val) {
+    const value = Number(val);
+    document.getElementById('feedRateLabel').innerText = `Feed Rate: ${value / 10000}`;
     
-    if (!controlCharacteristic) 
-    {
+    if (!controlCharacteristic) {
         return;
     }
     
-    var val2 = parseInt(val);  
-    let data = new Uint8Array([0x41, val2 / 256, val2 % 256)]);
+    const high = Math.floor(value / 256);
+    const low = value % 256;
+    const data = new Uint8Array([0x41, high, low]);
 
-    try 
-    {
+    try {
         await controlCharacteristic.writeValueWithoutResponse(data);
-    } 
-    catch (error) 
-    { 
-        console.error("Write error:", error); 
+    } catch (error) {
+        console.error("Write error:", error);
     }
 }
 
-async function updateKillRate(val) 
-{
-    document.getElementById('killRateLabel').innerText = `Kill Rate: ${val/10000}`;
+async function updateKillRate(val) {
+    const value = Number(val);
+    document.getElementById('killRateLabel').innerText = `Kill Rate: ${value}`;
     
-    if (!controlCharacteristic) 
-    {
+    if (!controlCharacteristic) {
         return;
     }
 
-    var val2 = parseInt(val);  
-    let data = new Uint8Array([0x42, val2 / 256, val2 % 256)]);
+    const high = Math.floor(value / 256);
+    const low = value % 256;
+    const data = new Uint8Array([0x42, high, low]);
     
-    try 
-    {
+    try {
         await controlCharacteristic.writeValueWithoutResponse(data);
-    } 
-    catch (error) 
-    { 
-        console.error("Write error:", error); 
+    } catch (error) {
+        console.error("Write error:", error);
     }
 }
 
-async function updateSpawnChance(val) 
-{
-    if (!controlCharacteristic) 
-    {
+async function updateSpawnChance(val) {
+    if (!controlCharacteristic) {
         return;
     }
 
-    var val2 = parseInt(val);  
-    let data = new Uint8Array([0x43, val2 / 256, val2 % 256]);
+    const value = Number(val);
+    const high = Math.floor(value / 256);
+    const low = value % 256;
+    const data = new Uint8Array([0x43, high, low]);
     
-    try 
-    {
+    try {
         await controlCharacteristic.writeValueWithoutResponse(data);
-    } 
-    catch (error) 
-    { 
-        console.error("Write error:", error); 
+    } catch (error) {
+        console.error("Write error:", error);
     }
 }
         
-async function updatePreset(val) 
-{
-    if (!controlCharacteristic) 
-    {
+async function updatePreset(val) {
+    if (!controlCharacteristic) {
         return;
     }
     
-    var val2 = parseInt(val);  
-    let data = new Uint8Array([0x44, val2]);
+    const value = Number(val);
+    const data = new Uint8Array([0x44, value]);
     
-    try 
-    {
+    try {
         await controlCharacteristic.writeValueWithoutResponse(data);
-    } 
-    catch (error) 
-    { 
-        console.error("Write error:", error); 
+    } catch (error) {
+        console.error("Write error:", error);
     }
 }
 
