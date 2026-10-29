@@ -107,7 +107,7 @@ async function connectBLE() {
     
     try {
         bleDevice = await navigator.bluetooth.requestDevice({
-            filters: [{ name: 'Matrix-Remote' }],
+            filters: [{ name: 'Cell-Remote' }],
             optionalServices: [SERVICE_UUID]
         });
 
@@ -136,7 +136,7 @@ async function connectBLE() {
 function onDisconnected() {
     document.getElementById('status').innerText = "Status: Disconnected";
     document.getElementById('connectBtn').style.backgroundColor = "#007aff";
-    document.getElementById('connectBtn').innerText = "Connect to Matrix";
+    document.getElementById('connectBtn').innerText = "Connect to Display";
     document.getElementById('brightSlider').disabled = true;
     document.getElementById('prevBtn').disabled = true;
     document.getElementById('nextBtn').disabled = true;
