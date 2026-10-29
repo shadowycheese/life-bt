@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cell Controller</title>
+    <title>Cells Controller</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -74,7 +74,7 @@
 <body>
 
 <div class="card">
-    <h2>Cell Remote</h2>
+    <h2>Cells Settings</h2>
     <button id="connectBtn" onclick="connectBLE()">Connect to Display</button>
     
     <div class="control-group">
@@ -103,7 +103,7 @@ const CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f60';
 
 async function connectBLE() {
     const statusText = document.getElementById('status');
-    statusText.innerText = "Status: Scanning...";
+    statusText.innerText = "Scanning...";
     
     try {
         bleDevice = await navigator.bluetooth.requestDevice({
@@ -111,12 +111,12 @@ async function connectBLE() {
             optionalServices: [SERVICE_UUID]
         });
 
-        statusText.innerText = "Status: Connecting...";
+        statusText.innerText = "Connecting...";
         const server = await bleDevice.gatt.connect();
         const service = await server.getPrimaryService(SERVICE_UUID);
         controlCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
 
-        statusText.innerText = "Status: Connected!";
+        statusText.innerText = "Connected!";
         document.getElementById('connectBtn').style.backgroundColor = "#34c759";
         document.getElementById('connectBtn').innerText = "Connected";
         
@@ -129,7 +129,7 @@ async function connectBLE() {
 
     } catch (error) {
         console.error(error);
-        statusText.innerText = "Status: Connection Failed";
+        statusText.innerText = `Connection Failed: ${error}`;
     }
 }
 
