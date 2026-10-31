@@ -148,6 +148,7 @@
     <div class="control-group">
         <label id="presetLabel">Preset:</label>
         <select id="presetDropdown" onchange="updatePreset(this.value)" disabled>
+            <option value="" hidden>Custom</option>
             <option value="0">Mitosos</option>
             <option value="1">Coral</option>
             <option value="2">Fingerpr.</option>
@@ -270,6 +271,9 @@ const STATE_CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f61';
  * Device -> browser, notify (9 bytes):
  *   [0x40, feedHi, feedLo, killHi, killLo, spawnHi, spawnLo, presetHi, presetLo]
  *
+ * In the state reply, preset 0xFFFF (-1 as int16) means "custom": the feed or
+ * kill rate was edited by hand, so no preset is selected.
+ *
  * The device may also notify a single 3-byte frame with the same layout as a
  * write (0x41..0x44) to push one changed value; the browser applies both.
  * If the characteristic has no notify/indicate property, the browser sends
@@ -301,7 +305,7 @@ const CONTROL_FIELDS = {
     0x41: RATE_CONFIG.feed,
     0x42: RATE_CONFIG.kill,
     0x43: { setting: 'spawnChance', min: 0, max: 5000 },
-    0x44: { setting: 'preset', min: 0, max: 14 }
+    0x44: { setting: 'preset', min: -1, max: 14, signed: true }
 };
 
 const STATE_FIELD_COMMANDS = [0x41, 0x42, 0x43, 0x44];
@@ -372,7 +376,14 @@ function applyCurrentControlsToUI() {
         input.value = formatPercent(currentSettings[rate.setting]);
     });
     setSpawnChanceOption(currentSettings.spawnChance);
-    document.getElementById('presetDropdown').value = String(currentSettings.preset);
+
+    const presetDropdown = document.getElementById('presetDropdown');
+    presetDropdown.value = currentSettings.preset < 0 ? '' : String(currentSettings.preset);
+}
+
+function clearPresetSelection() {
+    currentSettings.preset = -1;
+    document.getElementById('presetDropdown').value = '';
 }
 
 async function sendControlValue(command, value) {
@@ -409,7 +420,8 @@ function applyControlValue(command, rawValue) {
     if (!field) {
         return false;
     }
-    currentSettings[field.setting] = clampControlValue(field, rawValue);
+    const value = field.signed && rawValue > 0x7fff ? rawValue - 0x10000 : rawValue;
+    currentSettings[field.setting] = clampControlValue(field, value);
     return true;
 }
 
@@ -601,7 +613,9 @@ async function sendAllSettings() {
     await sendControlValue(0x41, currentSettings.feedRate);
     await sendControlValue(0x42, currentSettings.killRate);
     await sendControlValue(0x43, currentSettings.spawnChance);
-    await sendControlValue(0x44, currentSettings.preset);
+    if (currentSettings.preset >= 0) {
+        await sendControlValue(0x44, currentSettings.preset);
+    }
 }
 
 async function setRate(rateKey, rawValue) {
@@ -611,6 +625,7 @@ async function setRate(rateKey, rawValue) {
     currentSettings[rate.setting] = value;
     document.getElementById(rate.inputId).value = formatPercent(value);
     if (changed) {
+        clearPresetSelection();
         await sendControlValue(rate.command, value);
     }
 }
@@ -639,7 +654,13 @@ async function updateSpawnChance(val) {
 }
 
 async function updatePreset(val) {
+    if (val === '' || val === null || val === undefined) {
+        return;
+    }
     const value = Number(val);
+    if (!Number.isInteger(value) || value < 0) {
+        return;
+    }
     currentSettings.preset = value;
     await sendControlValue(0x44, value);
     await requestDeviceState();
