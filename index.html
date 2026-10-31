@@ -617,7 +617,7 @@ async function setRate(rateKey, rawValue) {
 
 function stepRate(rateKey, deltaPercent) {
     const rate = RATE_CONFIG[rateKey];
-    const delta = Math.round(Number(deltaPercent) * 10);
+    const delta = Math.round(Number(deltaPercent) * 100);
     return setRate(rateKey, currentSettings[rate.setting] + delta);
 }
 
