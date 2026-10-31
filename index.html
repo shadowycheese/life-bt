@@ -226,6 +226,10 @@
         </div>
     </div>
 
+    <div class="btn-row">
+        <button id="clearBtn" class="btn-secondary" onclick="clearDevice()" disabled>Clear</button>
+    </div>
+
     <p id="status">Device: Disconnected</p>
 </div>
 
@@ -267,6 +271,7 @@ const STATE_CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f61';
  *   0x43  spawn chance  percent * 100   (0..5000)
  *   0x44  preset index                  (0..14)
  *   0x40  request full state; hi/lo ignored (sent as 0x00 0x00)
+ *   0x45  clear the display; hi/lo ignored (sent as 0x00 0x00)
  *
  * Device -> browser, notify (9 bytes):
  *   [0x40, feedHi, feedLo, killHi, killLo, spawnHi, spawnLo, presetHi, presetLo]
@@ -342,6 +347,7 @@ function setControlState(connected) {
 
     document.getElementById('connectBtn').disabled = connected;
     document.getElementById('disconnectBtn').disabled = !connected;
+    document.getElementById('clearBtn').disabled = !connected;
 }
 
 function setSpawnChanceOption(value) {
@@ -645,6 +651,10 @@ function commitRateInput(rateKey) {
         return;
     }
     return setRate(rateKey, parsed);
+}
+
+async function clearDevice() {
+    await sendControlValue(0x45, 0);
 }
 
 async function updateSpawnChance(val) {
