@@ -571,7 +571,7 @@ async function setRate(rateKey, rawValue) {
 
 function stepRate(rateKey, deltaPercent) {
     const rate = RATE_CONFIG[rateKey];
-    const delta = Math.round(Number(deltaPercent) * 1000);
+    const delta = Math.round(Number(deltaPercent) * 100);
     return setRate(rateKey, currentSettings[rate.setting] + delta);
 }
 
@@ -618,7 +618,7 @@ Object.entries(RATE_CONFIG).forEach(([rateKey, rate]) => {
             input.blur();
         } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
             event.preventDefault();
-            stepRate(rateKey, event.key === 'ArrowUp' ? 0.001 : -0.001);
+            stepRate(rateKey, event.key === 'ArrowUp' ? 0.01 : -0.01);
         }
     });
 });
