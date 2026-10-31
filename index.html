@@ -231,6 +231,7 @@
 <script>
 let bleDevice = null;
 let controlCharacteristic = null;
+let stateCharacteristic = null;
 let notificationsEnabled = false;
 let stateRequestTimer = null;
 let stateRequestFallback = null;
@@ -246,6 +247,15 @@ const currentSettings = { ...DEFAULT_SETTINGS };
 
 const SERVICE_UUID = '41424344-4546-4748-494a-4b4c4d4e4f50';
 const CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f60';
+
+/*
+ * Optional dedicated characteristic for state replies. It must have the
+ * notify (or indicate, or read) property; the control characteristic above is
+ * write-only and cannot send data back. If the device does not expose it, the
+ * browser falls back to using the control characteristic when that one can
+ * notify or be read.
+ */
+const STATE_CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f61';
 
 /*
  * Control protocol (all 16-bit values big-endian, high byte first)
@@ -431,12 +441,12 @@ function handleControlNotification(event) {
 }
 
 async function readDeviceState() {
-    if (!controlCharacteristic || !controlCharacteristic.properties.read) {
+    if (!stateCharacteristic || !stateCharacteristic.properties.read) {
         return false;
     }
 
     try {
-        return applyStateFrame(await controlCharacteristic.readValue());
+        return applyStateFrame(await stateCharacteristic.readValue());
     } catch (error) {
         console.warn('State read failed:', error);
         return false;
@@ -444,22 +454,28 @@ async function readDeviceState() {
 }
 
 async function enableStateNotifications() {
-    if (!controlCharacteristic || !controlCharacteristic.properties) {
+    if (!stateCharacteristic || !stateCharacteristic.properties) {
         return false;
     }
 
-    const properties = controlCharacteristic.properties;
+    const properties = stateCharacteristic.properties;
     if (!properties.notify && !properties.indicate) {
+        if (!properties.read) {
+            console.warn(
+                'State read-back unavailable: the state characteristic needs notify, indicate or read. ' +
+                'Its properties are:', properties
+            );
+        }
         return false;
     }
 
-    controlCharacteristic.addEventListener('characteristicvaluechanged', handleControlNotification);
+    stateCharacteristic.addEventListener('characteristicvaluechanged', handleControlNotification);
     try {
-        await controlCharacteristic.startNotifications();
+        await stateCharacteristic.startNotifications();
         return true;
     } catch (error) {
         console.warn('Notifications unavailable:', error);
-        controlCharacteristic.removeEventListener('characteristicvaluechanged', handleControlNotification);
+        stateCharacteristic.removeEventListener('characteristicvaluechanged', handleControlNotification);
         return false;
     }
 }
@@ -501,6 +517,32 @@ async function requestDeviceState(onTimeout) {
     }, STATE_TIMEOUT_MS);
 }
 
+async function findStateCharacteristic(service) {
+    const canReport = characteristic => Boolean(
+        characteristic &&
+        characteristic.properties &&
+        (characteristic.properties.notify || characteristic.properties.indicate || characteristic.properties.read)
+    );
+
+    let dedicated = null;
+    try {
+        dedicated = await service.getCharacteristic(STATE_CHARACTERISTIC_UUID);
+    } catch (error) {
+        dedicated = null;
+    }
+
+    if (canReport(dedicated)) {
+        console.info('Using dedicated state characteristic');
+        return dedicated;
+    }
+    if (canReport(controlCharacteristic)) {
+        console.info('No dedicated state characteristic, using the control characteristic');
+        return controlCharacteristic;
+    }
+    console.warn('Neither characteristic can report state (need notify, indicate or read)');
+    return dedicated || controlCharacteristic;
+}
+
 async function connectBLE() {
     const statusText = document.getElementById('status');
     statusText.innerText = 'Scanning...';
@@ -515,7 +557,10 @@ async function connectBLE() {
         const server = await bleDevice.gatt.connect();
         const service = await server.getPrimaryService(SERVICE_UUID);
         controlCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+        stateCharacteristic = await findStateCharacteristic(service);
         notificationsEnabled = await enableStateNotifications();
+        console.log('Control characteristic properties:', controlCharacteristic.properties);
+        console.log('State characteristic properties:', stateCharacteristic && stateCharacteristic.properties);
 
         statusText.innerText = 'Device: Connected!';
         document.getElementById('connectBtn').style.backgroundColor = '#34c759';
@@ -543,10 +588,11 @@ function onDisconnected() {
     document.getElementById('connectBtn').style.backgroundColor = '#007aff';
     document.getElementById('connectBtn').innerText = 'Connect';
     clearStateRequest();
-    if (controlCharacteristic) {
-        controlCharacteristic.removeEventListener('characteristicvaluechanged', handleControlNotification);
+    if (stateCharacteristic) {
+        stateCharacteristic.removeEventListener('characteristicvaluechanged', handleControlNotification);
     }
     notificationsEnabled = false;
+    stateCharacteristic = null;
     controlCharacteristic = null;
     setControlState(false);
 }
