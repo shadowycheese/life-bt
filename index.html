@@ -24,7 +24,7 @@
             border-radius: 16px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.5);
             width: 100%;
-            max-width: 360px;
+            max-width: 420px;
             text-align: center;
         }
         .btn-row {
@@ -63,13 +63,56 @@
             color: #aaaaaa;
             margin-bottom: 8px;
         }
-        input[type=range] {
+        .rate-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .step-btn {
+            width: auto;
+            flex: 0 0 auto;
+            padding: 8px 5px;
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1;
+            background-color: #333333;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        .step-btn:active { background-color: #444444; }
+        .rate-field {
+            flex: 1 1 auto;
+            display: flex;
+            align-items: center;
+            min-width: 0;
+            background-color: #333333;
+            border: 1px solid #444444;
+            border-radius: 8px;
+            padding: 0 8px;
+        }
+        .rate-field:focus-within {
+            border-color: #007aff;
+            box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
+        }
+        .rate-field input {
+            flex: 1 1 auto;
+            min-width: 0;
             width: 100%;
-            height: 8px;
-            border-radius: 4px;
-            background: #333;
+            padding: 9px 0;
+            font-size: 15px;
+            font-weight: 500;
+            color: #ffffff;
+            background: transparent;
+            border: none;
             outline: none;
-            -webkit-appearance: none;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+        .rate-field input:disabled { color: #777777; }
+        .rate-field .unit {
+            padding-left: 4px;
+            font-size: 13px;
+            color: #888888;
         }
         select {
             width: 100%;
@@ -155,13 +198,31 @@
     </div>
 
     <div class="control-group">
-        <label id="feedRateLabel">Feed Rate: 0.039%</label>
-        <input type="range" id="feedRateSlider" min="1" max="10000" value="39" oninput="updateFeedRate(this.value)" disabled>
+        <label>Feed Rate</label>
+        <div class="rate-row">
+            <button type="button" class="step-btn" data-rate="feed" data-delta="-0.010" disabled>−0.010</button>
+            <button type="button" class="step-btn" data-rate="feed" data-delta="-0.001" disabled>−0.001</button>
+            <span class="rate-field">
+                <input type="text" id="feedRateInput" inputmode="decimal" value="0.032" disabled>
+                <span class="unit">%</span>
+            </span>
+            <button type="button" class="step-btn" data-rate="feed" data-delta="0.001" disabled>+0.001</button>
+            <button type="button" class="step-btn" data-rate="feed" data-delta="0.010" disabled>+0.010</button>
+        </div>
     </div>
 
     <div class="control-group">
-        <label id="killRateLabel">Kill Rate: 0.058%</label>
-        <input type="range" id="killRateSlider" min="0" max="10000" value="58" oninput="updateKillRate(this.value)" disabled>
+        <label>Kill Rate</label>
+        <div class="rate-row">
+            <button type="button" class="step-btn" data-rate="kill" data-delta="-0.010" disabled>−0.010</button>
+            <button type="button" class="step-btn" data-rate="kill" data-delta="-0.001" disabled>−0.001</button>
+            <span class="rate-field">
+                <input type="text" id="killRateInput" inputmode="decimal" value="0.032" disabled>
+                <span class="unit">%</span>
+            </span>
+            <button type="button" class="step-btn" data-rate="kill" data-delta="0.001" disabled>+0.001</button>
+            <button type="button" class="step-btn" data-rate="kill" data-delta="0.010" disabled>+0.010</button>
+        </div>
     </div>
 
     <p id="status">Device: Disconnected</p>
@@ -183,15 +244,41 @@ const currentSettings = { ...DEFAULT_SETTINGS };
 const SERVICE_UUID = '41424344-4546-4748-494a-4b4c4d4e4f50';
 const CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f60';
 
-function formatPer10kPercent(rawValue) {
+const RATE_CONFIG = {
+    feed: {
+        inputId: 'feedRateInput',
+        setting: 'feedRate',
+        command: 0x41,
+        min: 1,
+        max: 10000
+    },
+    kill: {
+        inputId: 'killRateInput',
+        setting: 'killRate',
+        command: 0x42,
+        min: 0,
+        max: 10000
+    }
+};
+
+function formatPercent(rawValue) {
     const value = Number(rawValue) || 0;
-    return `${(value / 1000).toFixed(3)}%`;
+    return (value / 1000).toFixed(3);
+}
+
+function parsePercent(text) {
+    const cleaned = String(text).replace(/%/g, '').replace(/\s/g, '').replace(',', '.');
+    if (cleaned === '') {
+        return NaN;
+    }
+    const value = Number(cleaned);
+    return Number.isFinite(value) ? Math.round(value * 1000) : NaN;
 }
 
 function setControlState(connected) {
     const controls = [
-        document.getElementById('feedRateSlider'),
-        document.getElementById('killRateSlider'),
+        document.getElementById('feedRateInput'),
+        document.getElementById('killRateInput'),
         document.getElementById('spawnChanceDropdown'),
         document.getElementById('presetDropdown')
     ];
@@ -200,18 +287,20 @@ function setControlState(connected) {
         control.disabled = !connected;
     });
 
+    document.querySelectorAll('.step-btn').forEach(button => {
+        button.disabled = !connected;
+    });
+
     document.getElementById('connectBtn').disabled = connected;
     document.getElementById('disconnectBtn').disabled = !connected;
 }
 
 function applyCurrentControlsToUI() {
-    document.getElementById('feedRateSlider').value = currentSettings.feedRate;
-    document.getElementById('killRateSlider').value = currentSettings.killRate;
+    Object.values(RATE_CONFIG).forEach(rate => {
+        document.getElementById(rate.inputId).value = formatPercent(currentSettings[rate.setting]);
+    });
     document.getElementById('spawnChanceDropdown').value = String(currentSettings.spawnChance);
     document.getElementById('presetDropdown').value = String(currentSettings.preset);
-
-    document.getElementById('feedRateLabel').innerText = `Feed Rate: ${formatPer10kPercent(currentSettings.feedRate)}`;
-    document.getElementById('killRateLabel').innerText = `Kill Rate: ${formatPer10kPercent(currentSettings.killRate)}`;
 }
 
 async function sendControlValue(command, value) {
@@ -282,18 +371,32 @@ async function sendAllSettings() {
     await sendControlValue(0x44, currentSettings.preset);
 }
 
-async function updateFeedRate(val) {
-    const value = Number(val);
-    currentSettings.feedRate = value;
-    document.getElementById('feedRateLabel').innerText = `Feed Rate: ${formatPer10kPercent(value)}`;
-    await sendControlValue(0x41, value);
+async function setRate(rateKey, rawValue) {
+    const rate = RATE_CONFIG[rateKey];
+    const value = Math.max(rate.min, Math.min(rate.max, Math.round(Number(rawValue) || 0)));
+    const changed = value !== currentSettings[rate.setting];
+    currentSettings[rate.setting] = value;
+    document.getElementById(rate.inputId).value = formatPercent(value);
+    if (changed) {
+        await sendControlValue(rate.command, value);
+    }
 }
 
-async function updateKillRate(val) {
-    const value = Number(val);
-    currentSettings.killRate = value;
-    document.getElementById('killRateLabel').innerText = `Kill Rate: ${formatPer10kPercent(value)}`;
-    await sendControlValue(0x42, value);
+function stepRate(rateKey, deltaPercent) {
+    const rate = RATE_CONFIG[rateKey];
+    const delta = Math.round(Number(deltaPercent) * 1000);
+    return setRate(rateKey, currentSettings[rate.setting] + delta);
+}
+
+function commitRateInput(rateKey) {
+    const rate = RATE_CONFIG[rateKey];
+    const input = document.getElementById(rate.inputId);
+    const parsed = parsePercent(input.value);
+    if (Number.isNaN(parsed)) {
+        input.value = formatPercent(currentSettings[rate.setting]);
+        return;
+    }
+    return setRate(rateKey, parsed);
 }
 
 async function updateSpawnChance(val) {
@@ -307,6 +410,30 @@ async function updatePreset(val) {
     currentSettings.preset = value;
     await sendControlValue(0x44, value);
 }
+
+document.querySelectorAll('.step-btn').forEach(button => {
+    button.addEventListener('click', () => {
+        stepRate(button.dataset.rate, button.dataset.delta);
+    });
+});
+
+Object.entries(RATE_CONFIG).forEach(([rateKey, rate]) => {
+    const input = document.getElementById(rate.inputId);
+
+    input.addEventListener('change', () => {
+        commitRateInput(rateKey);
+    });
+
+    input.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            input.blur();
+        } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+            event.preventDefault();
+            stepRate(rateKey, event.key === 'ArrowUp' ? 0.001 : -0.001);
+        }
+    });
+});
 
 setControlState(false);
 applyCurrentControlsToUI();
