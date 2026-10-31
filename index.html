@@ -231,6 +231,9 @@
 <script>
 let bleDevice = null;
 let controlCharacteristic = null;
+let notificationsEnabled = false;
+let stateRequestTimer = null;
+let stateRequestFallback = null;
 
 const DEFAULT_SETTINGS = {
     feedRate: 32,
@@ -243,6 +246,29 @@ const currentSettings = { ...DEFAULT_SETTINGS };
 
 const SERVICE_UUID = '41424344-4546-4748-494a-4b4c4d4e4f50';
 const CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f60';
+
+/*
+ * Control protocol (all 16-bit values big-endian, high byte first)
+ *
+ * Browser -> device, write (3 bytes): [command, hi, lo]
+ *   0x41  feed rate     percent * 1000   (1..10000, i.e. 0.001%..10.000%)
+ *   0x42  kill rate     percent * 1000   (0..10000)
+ *   0x43  spawn chance  percent * 100    (0..5000)
+ *   0x44  preset index                   (0..14)
+ *   0x40  request full state; hi/lo ignored (sent as 0x00 0x00)
+ *
+ * Device -> browser, notify (9 bytes):
+ *   [0x40, feedHi, feedLo, killHi, killLo, spawnHi, spawnLo, presetHi, presetLo]
+ *
+ * The device may also notify a single 3-byte frame with the same layout as a
+ * write (0x41..0x44) to push one changed value; the browser applies both.
+ * If the characteristic has no notify/indicate property, the browser sends
+ * 0x40 and then reads the characteristic once to get the same 9-byte frame.
+ */
+
+const STATE_REQUEST_COMMAND = 0x40;
+const STATE_TIMEOUT_MS = 1500;
+const READ_FALLBACK_DELAY_MS = 250;
 
 const RATE_CONFIG = {
     feed: {
@@ -260,6 +286,15 @@ const RATE_CONFIG = {
         max: 10000
     }
 };
+
+const CONTROL_FIELDS = {
+    0x41: RATE_CONFIG.feed,
+    0x42: RATE_CONFIG.kill,
+    0x43: { setting: 'spawnChance', min: 0, max: 5000 },
+    0x44: { setting: 'preset', min: 0, max: 14 }
+};
+
+const STATE_FIELD_COMMANDS = [0x41, 0x42, 0x43, 0x44];
 
 function formatPercent(rawValue) {
     const value = Number(rawValue) || 0;
@@ -295,11 +330,38 @@ function setControlState(connected) {
     document.getElementById('disconnectBtn').disabled = !connected;
 }
 
+function setSpawnChanceOption(value) {
+    const dropdown = document.getElementById('spawnChanceDropdown');
+    const raw = String(value);
+    const match = Array.from(dropdown.options).find(option => option.value === raw);
+    const dynamic = dropdown.querySelector('option[data-dynamic]');
+
+    if (match) {
+        if (dynamic) {
+            dynamic.remove();
+        }
+    } else {
+        const option = dynamic || document.createElement('option');
+        if (!dynamic) {
+            option.dataset.dynamic = 'true';
+            dropdown.appendChild(option);
+        }
+        option.value = raw;
+        option.textContent = `${(value / 100).toFixed(2)}%`;
+    }
+
+    dropdown.value = raw;
+}
+
 function applyCurrentControlsToUI() {
     Object.values(RATE_CONFIG).forEach(rate => {
-        document.getElementById(rate.inputId).value = formatPercent(currentSettings[rate.setting]);
+        const input = document.getElementById(rate.inputId);
+        if (document.activeElement === input) {
+            return;
+        }
+        input.value = formatPercent(currentSettings[rate.setting]);
     });
-    document.getElementById('spawnChanceDropdown').value = String(currentSettings.spawnChance);
+    setSpawnChanceOption(currentSettings.spawnChance);
     document.getElementById('presetDropdown').value = String(currentSettings.preset);
 }
 
@@ -320,6 +382,125 @@ async function sendControlValue(command, value) {
     }
 }
 
+function clampControlValue(field, value) {
+    return Math.max(field.min, Math.min(field.max, Math.round(Number(value) || 0)));
+}
+
+function clearStateRequest() {
+    if (stateRequestTimer !== null) {
+        clearTimeout(stateRequestTimer);
+        stateRequestTimer = null;
+    }
+    stateRequestFallback = null;
+}
+
+function applyControlValue(command, rawValue) {
+    const field = CONTROL_FIELDS[command];
+    if (!field) {
+        return false;
+    }
+    currentSettings[field.setting] = clampControlValue(field, rawValue);
+    return true;
+}
+
+function applyStateFrame(value) {
+    if (!value) {
+        return false;
+    }
+
+    let applied = false;
+    if (value.byteLength >= 9 && value.getUint8(0) === STATE_REQUEST_COMMAND) {
+        STATE_FIELD_COMMANDS.forEach((command, index) => {
+            applied = applyControlValue(command, value.getUint16(1 + index * 2)) || applied;
+        });
+    } else if (value.byteLength === 3) {
+        applied = applyControlValue(value.getUint8(0), value.getUint16(1));
+    }
+
+    if (!applied) {
+        return false;
+    }
+
+    clearStateRequest();
+    applyCurrentControlsToUI();
+    return true;
+}
+
+function handleControlNotification(event) {
+    applyStateFrame(event.target.value);
+}
+
+async function readDeviceState() {
+    if (!controlCharacteristic || !controlCharacteristic.properties.read) {
+        return false;
+    }
+
+    try {
+        return applyStateFrame(await controlCharacteristic.readValue());
+    } catch (error) {
+        console.warn('State read failed:', error);
+        return false;
+    }
+}
+
+async function enableStateNotifications() {
+    if (!controlCharacteristic || !controlCharacteristic.properties) {
+        return false;
+    }
+
+    const properties = controlCharacteristic.properties;
+    if (!properties.notify && !properties.indicate) {
+        return false;
+    }
+
+    controlCharacteristic.addEventListener('characteristicvaluechanged', handleControlNotification);
+    try {
+        await controlCharacteristic.startNotifications();
+        return true;
+    } catch (error) {
+        console.warn('Notifications unavailable:', error);
+        controlCharacteristic.removeEventListener('characteristicvaluechanged', handleControlNotification);
+        return false;
+    }
+}
+
+async function requestDeviceState(onTimeout) {
+    if (!controlCharacteristic) {
+        if (onTimeout) {
+            onTimeout();
+        }
+        return;
+    }
+
+    clearStateRequest();
+    stateRequestFallback = onTimeout || null;
+    await sendControlValue(STATE_REQUEST_COMMAND, 0);
+
+    if (!notificationsEnabled) {
+        stateRequestTimer = setTimeout(async () => {
+            stateRequestTimer = null;
+            const callback = stateRequestFallback;
+            stateRequestFallback = null;
+            if (await readDeviceState()) {
+                return;
+            }
+            if (callback) {
+                callback();
+            }
+        }, READ_FALLBACK_DELAY_MS);
+        return;
+    }
+
+    stateRequestTimer = setTimeout(() => {
+        stateRequestTimer = null;
+        const callback = stateRequestFallback;
+        stateRequestFallback = null;
+        if (callback) {
+            callback();
+        }
+    }, STATE_TIMEOUT_MS);
+}
+
 async function connectBLE() {
     const statusText = document.getElementById('status');
     statusText.innerText = 'Scanning...';
@@ -334,13 +515,14 @@ async function connectBLE() {
         const server = await bleDevice.gatt.connect();
         const service = await server.getPrimaryService(SERVICE_UUID);
         controlCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+        notificationsEnabled = await enableStateNotifications();
 
         statusText.innerText = 'Device: Connected!';
         document.getElementById('connectBtn').style.backgroundColor = '#34c759';
         document.getElementById('connectBtn').innerText = 'Connected';
         setControlState(true);
         applyCurrentControlsToUI();
-        await sendAllSettings();
+        await requestDeviceState(() => sendAllSettings());
         bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
     } catch (error) {
         console.error(error);
@@ -360,6 +542,11 @@ function onDisconnected() {
     document.getElementById('status').innerText = 'Device: Disconnected';
     document.getElementById('connectBtn').style.backgroundColor = '#007aff';
     document.getElementById('connectBtn').innerText = 'Connect';
+    clearStateRequest();
+    if (controlCharacteristic) {
+        controlCharacteristic.removeEventListener('characteristicvaluechanged', handleControlNotification);
+    }
+    notificationsEnabled = false;
     controlCharacteristic = null;
     setControlState(false);
 }
@@ -409,6 +596,7 @@ async function updatePreset(val) {
     const value = Number(val);
     currentSettings.preset = value;
     await sendControlValue(0x44, value);
+    await requestDeviceState();
 }
 
 document.querySelectorAll('.step-btn').forEach(button => {
