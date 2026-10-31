@@ -200,28 +200,28 @@
     <div class="control-group">
         <label>Feed Rate</label>
         <div class="rate-row">
-            <button type="button" class="step-btn" data-rate="feed" data-delta="-0.10" disabled>−0.10</button>
-            <button type="button" class="step-btn" data-rate="feed" data-delta="-0.01" disabled>−0.01</button>
+            <button type="button" class="step-btn" data-rate="feed" data-delta="-0.010" disabled>−0.010</button>
+            <button type="button" class="step-btn" data-rate="feed" data-delta="-0.001" disabled>−0.001</button>
             <span class="rate-field">
                 <input type="text" id="feedRateInput" inputmode="decimal" value="0.32" disabled>
                 <span class="unit">%</span>
             </span>
-            <button type="button" class="step-btn" data-rate="feed" data-delta="0.01" disabled>+0.01</button>
-            <button type="button" class="step-btn" data-rate="feed" data-delta="0.10" disabled>+0.10</button>
+            <button type="button" class="step-btn" data-rate="feed" data-delta="0.001" disabled>+0.001</button>
+            <button type="button" class="step-btn" data-rate="feed" data-delta="0.010" disabled>+0.010</button>
         </div>
     </div>
 
     <div class="control-group">
         <label>Kill Rate</label>
         <div class="rate-row">
-            <button type="button" class="step-btn" data-rate="kill" data-delta="-0.10" disabled>−0.10</button>
-            <button type="button" class="step-btn" data-rate="kill" data-delta="-0.01" disabled>−0.01</button>
+            <button type="button" class="step-btn" data-rate="kill" data-delta="-0.010" disabled>−0.010</button>
+            <button type="button" class="step-btn" data-rate="kill" data-delta="-0.001" disabled>−0.001</button>
             <span class="rate-field">
                 <input type="text" id="killRateInput" inputmode="decimal" value="0.32" disabled>
                 <span class="unit">%</span>
             </span>
-            <button type="button" class="step-btn" data-rate="kill" data-delta="0.01" disabled>+0.01</button>
-            <button type="button" class="step-btn" data-rate="kill" data-delta="0.10" disabled>+0.10</button>
+            <button type="button" class="step-btn" data-rate="kill" data-delta="0.001" disabled>+0.001</button>
+            <button type="button" class="step-btn" data-rate="kill" data-delta="0.010" disabled>+0.010</button>
         </div>
     </div>
 
@@ -308,7 +308,7 @@ const STATE_FIELD_COMMANDS = [0x41, 0x42, 0x43, 0x44];
 
 function formatPercent(rawValue) {
     const value = Number(rawValue) || 0;
-    return (value / 100).toFixed(2);
+    return (value / 100).toFixed(3);
 }
 
 function parsePercent(text) {
@@ -617,7 +617,7 @@ async function setRate(rateKey, rawValue) {
 
 function stepRate(rateKey, deltaPercent) {
     const rate = RATE_CONFIG[rateKey];
-    const delta = Math.round(Number(deltaPercent) * 100);
+    const delta = Math.round(Number(deltaPercent) * 10);
     return setRate(rateKey, currentSettings[rate.setting] + delta);
 }
 
@@ -664,7 +664,7 @@ Object.entries(RATE_CONFIG).forEach(([rateKey, rate]) => {
             input.blur();
         } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
             event.preventDefault();
-            stepRate(rateKey, event.key === 'ArrowUp' ? 0.01 : -0.01);
+            stepRate(rateKey, event.key === 'ArrowUp' ? 0.001 : -0.001);
         }
     });
 });
