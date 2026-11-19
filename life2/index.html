@@ -102,6 +102,9 @@
             font-size: 14px;
             color: #777777;
         }
+        .select-mode-btn {
+            margin-top: 20px;
+        }
         .btn-row {
             display: flex;
             gap: 10px;
@@ -354,14 +357,18 @@
         <div class="pad disabled" id="touchPad" aria-label="Grid position" aria-disabled="true">
             <span class="pad-marker" id="padMarker" hidden></span>
         </div>
+
+        <button type="button" class="select-mode-btn" data-mode="0" disabled>Select Mode</button>
     </section>
 
     <section class="card tab-panel" id="tab-gif" role="tabpanel" aria-labelledby="tabBtn-gif" hidden>
         <p class="placeholder">Coming soon</p>
+        <button type="button" class="select-mode-btn" data-mode="1" disabled>Select Mode</button>
     </section>
 
     <section class="card tab-panel" id="tab-mandelbrot" role="tabpanel" aria-labelledby="tabBtn-mandelbrot" hidden>
         <p class="placeholder">Coming soon</p>
+        <button type="button" class="select-mode-btn" data-mode="2" disabled>Select Mode</button>
     </section>
 </div>
 
@@ -380,6 +387,8 @@
  *   0x45  clear the display; hi/lo ignored (sent as 0x00 0x00)
  *   0x46  pad position: [0x46, x, y]    x 0..63, y 0..31
  *   0x47  cycle the display; hi/lo ignored (sent as 0x00 0x00)
+ *   0x7E  select mode: [0x7E, mode]     0 simulation, 1 GIF playback,
+ *                                       2 Mandelbrot; no response expected
  *
  * Device -> browser, notify (9 bytes):
  *   [0x40, feedHi, feedLo, killHi, killLo, spawnHi, spawnLo, presetHi, presetLo]
@@ -449,21 +458,23 @@ const ble = (() => {
         return Boolean(controlCharacteristic);
     }
 
-    async function send(command, value) {
+    async function sendBytes(bytes) {
         if (!controlCharacteristic) {
             return;
         }
 
-        const safeValue = Math.max(0, Math.min(65535, Number(value) || 0));
-        const high = Math.floor(safeValue / 256);
-        const low = safeValue % 256;
-        const data = new Uint8Array([command, high, low]);
-
         try {
-            await controlCharacteristic.writeValueWithoutResponse(data);
+            await controlCharacteristic.writeValueWithoutResponse(new Uint8Array(bytes));
         } catch (error) {
             console.error('Write error:', error);
         }
+    }
+
+    async function send(command, value) {
+        const safeValue = Math.max(0, Math.min(65535, Number(value) || 0));
+        const high = Math.floor(safeValue / 256);
+        const low = safeValue % 256;
+        return sendBytes([command, high, low]);
     }
 
     function clearRequest() {
@@ -702,7 +713,7 @@ const ble = (() => {
         setConnectionState(false);
     }
 
-    return { init, on, send, requestState, hasControl };
+    return { init, on, send, sendBytes, requestState, hasControl };
 })();
 
 /* ==========================================================================
@@ -1115,6 +1126,44 @@ const tabs = (() => {
 })();
 
 /* ==========================================================================
+ * Mode selection (available on every tab)
+ *
+ * Fire-and-forget: [0x7E, mode] where mode is 0 simulation, 1 GIF playback,
+ * 2 Mandelbrot. The device does not reply.
+ * ========================================================================== */
+
+const modeSelector = (() => {
+    const MODE_COMMAND = 0x7E;
+    const buttons = Array.from(document.querySelectorAll('.select-mode-btn'));
+
+    function setEnabled(connected) {
+        buttons.forEach(button => {
+            button.disabled = !connected;
+        });
+    }
+
+    async function selectMode(event) {
+        const mode = Number(event.currentTarget.dataset.mode);
+        if (!Number.isInteger(mode)) {
+            return;
+        }
+        await ble.sendBytes([MODE_COMMAND, mode]);
+    }
+
+    function init() {
+        buttons.forEach(button => {
+            button.addEventListener('click', selectMode);
+        });
+
+        ble.on('connected', () => setEnabled(true));
+        ble.on('disconnected', () => setEnabled(false));
+        setEnabled(false);
+    }
+
+    return { init };
+})();
+
+/* ==========================================================================
  * Boot
  * ========================================================================== */
 
@@ -1128,6 +1177,7 @@ function initMandelbrot() {
 
 ble.init();
 simulation.init();
+modeSelector.init();
 initGif();
 initMandelbrot();
 tabs.init();
