@@ -102,8 +102,49 @@
             font-size: 14px;
             color: #777777;
         }
+        .file-info {
+            margin: 10px 0 0;
+            font-size: 13px;
+            color: #aaaaaa;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .progress {
+            width: 100%;
+            height: 10px;
+            margin: 18px 0 10px;
+            background-color: #333333;
+            border: 1px solid #444444;
+            border-radius: 6px;
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+        .progress[hidden] {
+            display: none;
+        }
+        .progress-bar {
+            display: block;
+            width: 0;
+            height: 100%;
+            background-color: #007aff;
+            border-radius: 5px;
+            transition: width 0.15s linear;
+        }
+        .upload-status {
+            min-height: 18px;
+            margin: 0 0 18px;
+            font-size: 13px;
+            color: #aaaaaa;
+        }
+        .upload-status.error {
+            color: #ff6b6b;
+        }
         .select-mode-btn {
             margin-top: 20px;
+        }
+        #tab-gif .select-mode-btn {
+            margin-top: 0;
         }
         .btn-row {
             display: flex;
@@ -362,7 +403,25 @@
     </section>
 
     <section class="card tab-panel" id="tab-gif" role="tabpanel" aria-labelledby="tabBtn-gif" hidden>
-        <p class="placeholder">Coming soon</p>
+        <div class="control-group">
+            <label id="gifFileLabel" for="gifFileInput">GIF File</label>
+            <input type="file" id="gifFileInput" accept="image/gif,.gif" hidden>
+            <button type="button" id="gifChooseBtn" class="btn-secondary">Choose GIF…</button>
+            <p class="file-info" id="gifFileInfo">No file selected</p>
+        </div>
+
+        <div class="progress" id="gifProgress" role="progressbar" aria-label="Upload progress"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+            <span class="progress-bar" id="gifProgressBar"></span>
+        </div>
+
+        <p class="upload-status" id="gifStatus" aria-live="polite">Choose a GIF file to upload (max 1 MiB).</p>
+
+        <div class="btn-row">
+            <button id="gifStartBtn" disabled>Start Upload</button>
+            <button id="gifCancelBtn" class="btn-secondary" disabled>Cancel</button>
+        </div>
+
         <button type="button" class="select-mode-btn" data-mode="1" disabled>Select Mode</button>
     </section>
 
@@ -389,6 +448,23 @@
  *   0x47  cycle the display; hi/lo ignored (sent as 0x00 0x00)
  *   0x7E  select mode: [0x7E, mode]     0 simulation, 1 GIF playback,
  *                                       2 Mandelbrot; no response expected
+ *
+ * GIF upload (GIF playback tab; big-endian, replies are notifications):
+ *   0x50  start:    [0x50, size(4), name(32)]   size in bytes, name is ASCII,
+ *                   NUL padded/terminated
+ *         reply:    [0x50, status, maxChunk(2), window]   status 0 = accepted;
+ *                   maxChunk is file bytes per chunk (MTU 517 allows at most
+ *                   511, since the chunk frame has a 3-byte header);
+ *                   a 2-byte [0x50, 0x00] means 250 bytes, window 1
+ *   0x51  chunk:    [0x51, seq(2), data...]     seq starts at 0
+ *         reply:    [0x51, seq(2), status]
+ *   0x54  finish:   [0x54, crc16(2)]            CRC-16/CCITT-FALSE of the file
+ *         reply:    [0x53, status, deviceCrc(2)?]  deviceCrc present on error
+ *   0x53  abort:    [0x53]                      reply: [0x52, status]
+ *
+ * The host sends up to `window` chunks without waiting for their acks and
+ * resends unacked chunks after a timeout; the device writes chunk n at
+ * offset n * maxChunk, so a resend is idempotent.
  *
  * Device -> browser, notify (9 bytes):
  *   [0x40, feedHi, feedLo, killHi, killLo, spawnHi, spawnLo, presetHi, presetLo]
@@ -460,13 +536,21 @@ const ble = (() => {
 
     async function sendBytes(bytes) {
         if (!controlCharacteristic) {
-            return;
+            return false;
         }
 
+        const data = new Uint8Array(bytes);
+
         try {
-            await controlCharacteristic.writeValueWithoutResponse(new Uint8Array(bytes));
+            if (controlCharacteristic.properties && controlCharacteristic.properties.writeWithoutResponse) {
+                await controlCharacteristic.writeValueWithoutResponse(data);
+            } else {
+                await controlCharacteristic.writeValue(data);
+            }
+            return true;
         } catch (error) {
             console.error('Write error:', error);
+            return false;
         }
     }
 
@@ -1136,10 +1220,24 @@ const modeSelector = (() => {
     const MODE_COMMAND = 0x7E;
     const buttons = Array.from(document.querySelectorAll('.select-mode-btn'));
 
-    function setEnabled(connected) {
+    let connected = false;
+    let uploading = false;
+
+    function refresh() {
+        const disabled = !connected || uploading;
         buttons.forEach(button => {
-            button.disabled = !connected;
+            button.disabled = disabled;
         });
+    }
+
+    function setConnected(value) {
+        connected = value;
+        refresh();
+    }
+
+    function setUploading(value) {
+        uploading = value;
+        refresh();
     }
 
     async function selectMode(event) {
@@ -1155,9 +1253,590 @@ const modeSelector = (() => {
             button.addEventListener('click', selectMode);
         });
 
-        ble.on('connected', () => setEnabled(true));
-        ble.on('disconnected', () => setEnabled(false));
-        setEnabled(false);
+        ble.on('connected', () => setConnected(true));
+        ble.on('disconnected', () => setConnected(false));
+        setConnected(false);
+    }
+
+    return { init, setUploading };
+})();
+
+/* ==========================================================================
+ * GIF upload (GIF playback tab)
+ *
+ * See the protocol description above the ble module. Chunks may be in flight
+ * up to the window advertised by the device; every chunk is acked and any
+ * chunk that goes unanswered for 2 s is resent (the device writes chunk n at
+ * offset n * maxChunk, so resends are idempotent).
+ * ========================================================================== */
+
+const gifUpload = (() => {
+    const START_COMMAND = 0x50;
+    const CHUNK_COMMAND = 0x51;
+    const COMPLETE_COMMAND = 0x54;
+    const ABORT_COMMAND = 0x53;
+
+    const START_ACK = 0x50;
+    const CHUNK_ACK = 0x51;
+    const ABORT_ACK = 0x52;
+    const COMPLETE_ACK = 0x53;
+
+    const MAX_FILE_BYTES = 1024 * 1024;
+    const MIN_CHUNK_BYTES = 1;
+    /* A chunk frame is 3 header bytes + data, so MTU 517 allows 511 data bytes. */
+    const MAX_CHUNK_BYTES = 511;
+    const DEFAULT_CHUNK_BYTES = 250;
+    const DEFAULT_WINDOW = 1;
+    const MAX_WINDOW = 32;
+    const NAME_BYTES = 32;
+    const ACK_TIMEOUT_MS = 2000;
+    const MAX_ATTEMPTS = 3;
+
+    const CANCELLED = Symbol('upload cancelled');
+
+    const $ = id => document.getElementById(id);
+
+    let selectedFile = null;
+    let fileBytes = null;
+    let fileCrc = 0;
+
+    let busy = false;
+    let stopRequested = false;
+    let stopReason = null;
+    let activeTransfer = null;
+    let controlWaiter = null;
+
+    let progressFrame = 0;
+    let pendingProgress = null;
+
+    function writeUint32BE(target, offset, value) {
+        target[offset] = (value >>> 24) & 0xff;
+        target[offset + 1] = (value >>> 16) & 0xff;
+        target[offset + 2] = (value >>> 8) & 0xff;
+        target[offset + 3] = value & 0xff;
+    }
+
+    function crc16Ccitt(data) {
+        let crc = 0xffff;
+        for (let i = 0; i < data.length; i++) {
+            crc ^= data[i] << 8;
+            for (let bit = 0; bit < 8; bit++) {
+                crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+            }
+        }
+        return crc;
+    }
+
+    function clampInt(value, min, max, fallback) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) {
+            return fallback;
+        }
+        return Math.max(min, Math.min(max, Math.round(number)));
+    }
+
+    function buildName(name) {
+        let ascii = Array.from(String(name || 'upload.gif')).map(character => {
+            const code = character.charCodeAt(0);
+            return code >= 32 && code < 127 ? character : '_';
+        }).join('') || 'upload.gif';
+
+        if (ascii.length > NAME_BYTES - 1) {
+            const suffix = ascii.toLowerCase().endsWith('.gif') ? ascii.slice(-4) : '';
+            ascii = ascii.slice(0, NAME_BYTES - 1 - suffix.length) + suffix;
+        }
+
+        const out = new Uint8Array(NAME_BYTES);
+        for (let i = 0; i < ascii.length; i++) {
+            out[i] = ascii.charCodeAt(i) & 0x7f;
+        }
+        return out;
+    }
+
+    function formatBytes(bytes) {
+        if (bytes >= 1024 * 1024) {
+            return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+        }
+        if (bytes >= 1024) {
+            return `${(bytes / 1024).toFixed(1)} KB`;
+        }
+        return `${bytes} B`;
+    }
+
+    function setStatus(text, isError) {
+        const status = $('gifStatus');
+        status.textContent = text;
+        status.classList.toggle('error', Boolean(isError));
+    }
+
+    function refreshControls() {
+        const connected = ble.hasControl();
+        $('gifFileInput').disabled = busy;
+        $('gifChooseBtn').disabled = busy;
+        $('gifStartBtn').disabled = busy || !selectedFile || !connected;
+        $('gifCancelBtn').disabled = !busy;
+        modeSelector.setUploading(busy);
+    }
+
+    function resetProgress() {
+        if (progressFrame) {
+            cancelAnimationFrame(progressFrame);
+            progressFrame = 0;
+        }
+        pendingProgress = null;
+        $('gifProgress').hidden = true;
+        $('gifProgressBar').style.width = '0%';
+        $('gifProgress').setAttribute('aria-valuenow', '0');
+    }
+
+    function paintProgress(done, total) {
+        const percent = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+        $('gifProgressBar').style.width = `${percent}%`;
+        $('gifProgress').setAttribute('aria-valuenow', String(percent));
+        setStatus(`Uploading… ${percent}% (${done} / ${total} chunks)`);
+    }
+
+    function scheduleProgress(done, total) {
+        pendingProgress = { done, total };
+        if (progressFrame) {
+            return;
+        }
+        progressFrame = requestAnimationFrame(() => {
+            progressFrame = 0;
+            const pending = pendingProgress;
+            pendingProgress = null;
+            if (pending) {
+                paintProgress(pending.done, pending.total);
+            }
+        });
+    }
+
+    function flushProgress() {
+        if (progressFrame) {
+            cancelAnimationFrame(progressFrame);
+            progressFrame = 0;
+        }
+        if (pendingProgress) {
+            const { done, total } = pendingProgress;
+            pendingProgress = null;
+            paintProgress(done, total);
+        }
+    }
+
+    function matchStart(view) {
+        if (view.byteLength < 2 || view.getUint8(0) !== START_ACK) {
+            return undefined;
+        }
+
+        const status = view.getUint8(1);
+        if (status !== 0) {
+            return { status };
+        }
+        if (view.byteLength >= 5) {
+            return { status, maxChunk: view.getUint16(2), window: view.getUint8(4) };
+        }
+        if (view.byteLength === 2) {
+            return { status, maxChunk: DEFAULT_CHUNK_BYTES, window: DEFAULT_WINDOW };
+        }
+        return { status: 255 };
+    }
+
+    function matchComplete(view) {
+        if (view.byteLength < 2 || view.getUint8(0) !== COMPLETE_ACK) {
+            return undefined;
+        }
+        return {
+            status: view.getUint8(1),
+            deviceCrc: view.byteLength >= 4 ? view.getUint16(2) : null
+        };
+    }
+
+    function matchAbort(view) {
+        if (view.byteLength < 2 || view.getUint8(0) !== ABORT_ACK) {
+            return undefined;
+        }
+        return { status: view.getUint8(1) };
+    }
+
+    function waitForControl(match, timeoutMs) {
+        return new Promise(resolve => {
+            if (controlWaiter) {
+                controlWaiter.done(null);
+            }
+
+            let timer = null;
+            const waiter = {
+                match,
+                done(value) {
+                    if (timer !== null) {
+                        clearTimeout(timer);
+                        timer = null;
+                    }
+                    if (controlWaiter === waiter) {
+                        controlWaiter = null;
+                    }
+                    resolve(value);
+                }
+            };
+
+            controlWaiter = waiter;
+            timer = setTimeout(() => waiter.done(null), timeoutMs);
+        });
+    }
+
+    function waitForWake(transfer, timeoutMs) {
+        return new Promise(resolve => {
+            let timer = null;
+            const done = () => {
+                if (timer !== null) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                if (transfer.wake === done) {
+                    transfer.wake = null;
+                }
+                resolve();
+            };
+            transfer.wake = done;
+            timer = setTimeout(done, timeoutMs);
+        });
+    }
+
+    function handleFrame(view) {
+        if (!view || view.byteLength < 2) {
+            return false;
+        }
+
+        const command = view.getUint8(0);
+
+        if (activeTransfer && command === CHUNK_ACK && view.byteLength >= 4) {
+            const seq = view.getUint16(1);
+            const status = view.getUint8(3);
+            const state = activeTransfer.pending.get(seq);
+
+            if (state) {
+                if (status === 0) {
+                    activeTransfer.pending.delete(seq);
+                    activeTransfer.acked += 1;
+                } else {
+                    activeTransfer.error = new Error(`Device rejected chunk ${seq + 1} (status ${status})`);
+                }
+                if (activeTransfer.wake) {
+                    activeTransfer.wake();
+                }
+            }
+            return true;
+        }
+
+        if (controlWaiter) {
+            const result = controlWaiter.match(view);
+            if (result !== undefined) {
+                controlWaiter.done(result);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    async function sendChunk(seq, chunkSize) {
+        const offset = seq * chunkSize;
+        const length = Math.min(chunkSize, fileBytes.length - offset);
+        const frame = new Uint8Array(3 + length);
+        frame[0] = CHUNK_COMMAND;
+        frame[1] = (seq >>> 8) & 0xff;
+        frame[2] = seq & 0xff;
+        frame.set(fileBytes.subarray(offset, offset + length), 3);
+
+        if (!(await ble.sendBytes(frame))) {
+            throw new Error('Bluetooth write was rejected');
+        }
+    }
+
+    async function abortTransfer() {
+        if (!ble.hasControl()) {
+            return;
+        }
+        const abortAckPromise = waitForControl(matchAbort, ACK_TIMEOUT_MS);
+        if (!(await ble.sendBytes([ABORT_COMMAND]))) {
+            return;
+        }
+        await abortAckPromise;
+    }
+
+    async function runTransfer() {
+        const size = fileBytes.length;
+        const name = buildName(selectedFile.name);
+        const startFrame = new Uint8Array(5 + NAME_BYTES);
+        startFrame[0] = START_COMMAND;
+        writeUint32BE(startFrame, 1, size);
+        startFrame.set(name, 5);
+
+        /* Listen before writing: a fast device may reply immediately. */
+        const startAckPromise = waitForControl(matchStart, ACK_TIMEOUT_MS);
+        if (!(await ble.sendBytes(startFrame))) {
+            throw new Error('Bluetooth write was rejected');
+        }
+
+        const startAck = await startAckPromise;
+        if (stopRequested) {
+            throw CANCELLED;
+        }
+        if (!startAck) {
+            throw new Error('No reply to the upload start');
+        }
+        if (startAck.status !== 0) {
+            throw new Error(`Device refused the upload (status ${startAck.status})`);
+        }
+
+        const chunkSize = startAck.maxChunk > 0
+            ? clampInt(startAck.maxChunk, MIN_CHUNK_BYTES, MAX_CHUNK_BYTES, DEFAULT_CHUNK_BYTES)
+            : DEFAULT_CHUNK_BYTES;
+        const windowSize = startAck.window > 0
+            ? clampInt(startAck.window, 1, MAX_WINDOW, DEFAULT_WINDOW)
+            : DEFAULT_WINDOW;
+        const total = Math.ceil(size / chunkSize);
+
+        const transfer = {
+            pending: new Map(),
+            acked: 0,
+            error: null,
+            wake: null
+        };
+        activeTransfer = transfer;
+
+        $('gifProgress').hidden = false;
+        paintProgress(0, total);
+
+        let nextSeq = 0;
+
+        while (nextSeq < total || transfer.pending.size > 0) {
+            if (transfer.error) {
+                throw transfer.error;
+            }
+            if (stopRequested) {
+                throw CANCELLED;
+            }
+
+            while (nextSeq < total && transfer.pending.size < windowSize) {
+                const seq = nextSeq;
+                /* Register before writing so an immediate ack is not lost. */
+                transfer.pending.set(seq, { attempts: 1, sentAt: Date.now() });
+                nextSeq += 1;
+                await sendChunk(seq, chunkSize);
+            }
+
+            if (!transfer.pending.size && nextSeq >= total) {
+                break;
+            }
+
+            let earliest = Infinity;
+            for (const state of transfer.pending.values()) {
+                earliest = Math.min(earliest, state.sentAt + ACK_TIMEOUT_MS);
+            }
+
+            if (earliest === Infinity) {
+                /* Everything in flight was acked while sending; send more. */
+                continue;
+            }
+
+            await waitForWake(transfer, Math.max(0, earliest - Date.now()));
+
+            if (transfer.error) {
+                throw transfer.error;
+            }
+            if (stopRequested) {
+                throw CANCELLED;
+            }
+
+            const now = Date.now();
+            const expired = [...transfer.pending.keys()]
+                .sort((a, b) => a - b)
+                .filter(seq => {
+                    const state = transfer.pending.get(seq);
+                    return state && state.sentAt + ACK_TIMEOUT_MS <= now;
+                });
+
+            for (const seq of expired) {
+                const state = transfer.pending.get(seq);
+                if (!state) {
+                    continue;
+                }
+                state.attempts += 1;
+                if (state.attempts > MAX_ATTEMPTS) {
+                    throw new Error(`No reply for chunk ${seq + 1} of ${total}`);
+                }
+                state.sentAt = Date.now();
+                await sendChunk(seq, chunkSize);
+            }
+
+            scheduleProgress(transfer.acked, total);
+        }
+
+        scheduleProgress(transfer.acked, total);
+        flushProgress();
+        setStatus('Verifying…');
+
+        const completeFrame = new Uint8Array([
+            COMPLETE_COMMAND,
+            (fileCrc >>> 8) & 0xff,
+            fileCrc & 0xff
+        ]);
+
+        const completeAckPromise = waitForControl(matchComplete, ACK_TIMEOUT_MS);
+        if (!(await ble.sendBytes(completeFrame))) {
+            throw new Error('Bluetooth write was rejected');
+        }
+
+        const completeAck = await completeAckPromise;
+        if (stopRequested) {
+            throw CANCELLED;
+        }
+        if (!completeAck) {
+            throw new Error('No reply to upload completion');
+        }
+        if (completeAck.status !== 0) {
+            const crcText = completeAck.deviceCrc === null
+                ? ''
+                : `, device CRC 0x${completeAck.deviceCrc.toString(16).padStart(4, '0')}`;
+            throw new Error(`Upload rejected (status ${completeAck.status}${crcText})`);
+        }
+    }
+
+    async function startUpload() {
+        if (busy || !selectedFile || !fileBytes || !ble.hasControl()) {
+            return;
+        }
+
+        busy = true;
+        stopRequested = false;
+        stopReason = null;
+        refreshControls();
+
+        $('gifProgress').hidden = false;
+        $('gifProgressBar').style.width = '0%';
+        setStatus('Starting upload…');
+
+        try {
+            await runTransfer();
+            flushProgress();
+            $('gifProgressBar').style.width = '100%';
+            $('gifProgress').setAttribute('aria-valuenow', '100');
+            setStatus('Upload complete.');
+        } catch (error) {
+            flushProgress();
+            if (error === CANCELLED) {
+                if (stopReason === 'disconnect') {
+                    setStatus('Upload interrupted: device disconnected.', true);
+                } else {
+                    setStatus('Upload aborted.');
+                }
+            } else {
+                setStatus(`Error: ${error.message}`, true);
+            }
+            await abortTransfer();
+        } finally {
+            activeTransfer = null;
+            if (controlWaiter) {
+                controlWaiter.done(null);
+            }
+            busy = false;
+            refreshControls();
+        }
+    }
+
+    async function selectFile(file) {
+        if (busy) {
+            return;
+        }
+
+        resetProgress();
+        selectedFile = null;
+        fileBytes = null;
+        fileCrc = 0;
+        $('gifFileInfo').textContent = 'No file selected';
+        $('gifFileInfo').title = '';
+        setStatus('Choose a GIF file to upload (max 1 MiB).');
+        refreshControls();
+
+        if (!file) {
+            return;
+        }
+        if (file.size === 0) {
+            setStatus('That file is empty.', true);
+            return;
+        }
+        if (file.size > MAX_FILE_BYTES) {
+            setStatus('File is too large (maximum 1 MiB).', true);
+            return;
+        }
+
+        const data = new Uint8Array(await file.arrayBuffer());
+        const magic = String.fromCharCode(data[0], data[1], data[2], data[3], data[4], data[5]);
+
+        if (magic !== 'GIF87a' && magic !== 'GIF89a') {
+            setStatus('That file is not a GIF.', true);
+            return;
+        }
+
+        selectedFile = file;
+        fileBytes = data;
+        fileCrc = crc16Ccitt(data);
+
+        $('gifFileInfo').textContent = `${file.name} (${formatBytes(file.size)})`;
+        $('gifFileInfo').title = file.name;
+        setStatus('Ready to upload.');
+        refreshControls();
+    }
+
+    function cancelUpload() {
+        if (!busy || stopRequested) {
+            return;
+        }
+        stopReason = 'cancel';
+        stopRequested = true;
+        setStatus('Cancelling…');
+        if (activeTransfer && activeTransfer.wake) {
+            activeTransfer.wake();
+        }
+        if (controlWaiter) {
+            controlWaiter.done(null);
+        }
+    }
+
+    function handleDisconnected() {
+        if (busy) {
+            stopReason = 'disconnect';
+            stopRequested = true;
+            if (activeTransfer && activeTransfer.wake) {
+                activeTransfer.wake();
+            }
+            if (controlWaiter) {
+                controlWaiter.done(null);
+            }
+        }
+        refreshControls();
+    }
+
+    function init() {
+        $('gifChooseBtn').addEventListener('click', () => {
+            $('gifFileInput').click();
+        });
+
+        $('gifFileInput').addEventListener('change', event => {
+            const file = (event.target.files && event.target.files[0]) || null;
+            event.target.value = '';
+            void selectFile(file);
+        });
+
+        $('gifStartBtn').addEventListener('click', startUpload);
+        $('gifCancelBtn').addEventListener('click', cancelUpload);
+
+        ble.on('connected', refreshControls);
+        ble.on('disconnected', handleDisconnected);
+        ble.on('frame', handleFrame);
+
+        refreshControls();
     }
 
     return { init };
@@ -1167,10 +1846,6 @@ const modeSelector = (() => {
  * Boot
  * ========================================================================== */
 
-function initGif() {
-    // Populated when the GIF playback mode is built.
-}
-
 function initMandelbrot() {
     // Populated when the Mandelbrot mode is built.
 }
@@ -1178,7 +1853,7 @@ function initMandelbrot() {
 ble.init();
 simulation.init();
 modeSelector.init();
-initGif();
+gifUpload.init();
 initMandelbrot();
 tabs.init();
 </script>
