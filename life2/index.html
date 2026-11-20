@@ -483,11 +483,10 @@ const ble = (() => {
     const CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f60';
 
     /*
-     * Optional dedicated characteristic for state replies. It must have the
-     * notify (or indicate, or read) property; the control characteristic above
-     * is write-only and cannot send data back. If the device does not expose
-     * it, the browser falls back to using the control characteristic when that
-     * one can notify or be read.
+     * Optional dedicated characteristic for state replies. The browser
+     * subscribes to notifications on every characteristic in the service that
+     * supports notify or indicate, so replies are received whichever one the
+     * firmware uses; this UUID is only preferred for read-back.
      */
     const STATE_CHARACTERISTIC_UUID = '51525354-5556-5758-595a-5b5c5d5e5f61';
 
@@ -498,6 +497,7 @@ const ble = (() => {
     let device = null;
     let controlCharacteristic = null;
     let stateCharacteristic = null;
+    let notificationCharacteristics = [];
     let notificationsEnabled = false;
     let requestTimer = null;
     let requestFallback = null;
@@ -592,7 +592,14 @@ const ble = (() => {
     }
 
     function handleNotification(event) {
-        dispatchFrame(event.target.value);
+        const view = event.target.value;
+        if (view) {
+            const bytes = Array.from(new Uint8Array(view.buffer, view.byteOffset, view.byteLength))
+                .map(byte => byte.toString(16).padStart(2, '0'))
+                .join(' ');
+            console.debug(`RX ${event.target.uuid}: ${bytes}`);
+        }
+        dispatchFrame(view);
     }
 
     async function readDeviceState() {
@@ -608,31 +615,48 @@ const ble = (() => {
         }
     }
 
-    async function enableStateNotifications() {
-        if (!stateCharacteristic || !stateCharacteristic.properties) {
+    function canNotify(characteristic) {
+        return Boolean(
+            characteristic &&
+            characteristic.properties &&
+            (characteristic.properties.notify || characteristic.properties.indicate)
+        );
+    }
+
+    function canRead(characteristic) {
+        return Boolean(characteristic && characteristic.properties && characteristic.properties.read);
+    }
+
+    /*
+     * Subscribe to every characteristic that can notify. The firmware decides
+     * which one carries replies (control, dedicated state, or another one in
+     * the service), so subscribing to all of them means a reply is not lost
+     * just because the browser guessed a different characteristic.
+     */
+    async function enableNotifications(characteristics) {
+        const candidates = characteristics.filter(canNotify);
+        if (!candidates.length) {
+            console.warn(
+                'No characteristic in the service supports notify or indicate. ' +
+                'Check that the reply characteristic has the NOTIFY property.'
+            );
             return false;
         }
 
-        const properties = stateCharacteristic.properties;
-        if (!properties.notify && !properties.indicate) {
-            if (!properties.read) {
-                console.warn(
-                    'State read-back unavailable: the state characteristic needs notify, indicate or read. ' +
-                    'Its properties are:', properties
-                );
+        let subscribed = false;
+        for (const characteristic of candidates) {
+            characteristic.addEventListener('characteristicvaluechanged', handleNotification);
+            try {
+                await characteristic.startNotifications();
+                notificationCharacteristics.push(characteristic);
+                subscribed = true;
+                console.info(`Subscribed to notifications on ${characteristic.uuid}`);
+            } catch (error) {
+                characteristic.removeEventListener('characteristicvaluechanged', handleNotification);
+                console.warn(`Notifications unavailable on ${characteristic.uuid}:`, error);
             }
-            return false;
         }
-
-        stateCharacteristic.addEventListener('characteristicvaluechanged', handleNotification);
-        try {
-            await stateCharacteristic.startNotifications();
-            return true;
-        } catch (error) {
-            console.warn('Notifications unavailable:', error);
-            stateCharacteristic.removeEventListener('characteristicvaluechanged', handleNotification);
-            return false;
-        }
+        return subscribed;
     }
 
     async function requestState(onTimeout) {
@@ -672,29 +696,29 @@ const ble = (() => {
         }, STATE_TIMEOUT_MS);
     }
 
-    async function findStateCharacteristic(service) {
-        const canReport = characteristic => Boolean(
-            characteristic &&
-            characteristic.properties &&
-            (characteristic.properties.notify || characteristic.properties.indicate || characteristic.properties.read)
-        );
-
-        let dedicated = null;
-        try {
-            dedicated = await service.getCharacteristic(STATE_CHARACTERISTIC_UUID);
-        } catch (error) {
-            dedicated = null;
+    async function findStateCharacteristic(service, characteristics) {
+        let dedicated = characteristics.find(characteristic =>
+            characteristic.uuid === STATE_CHARACTERISTIC_UUID) || null;
+        if (!dedicated) {
+            try {
+                dedicated = await service.getCharacteristic(STATE_CHARACTERISTIC_UUID);
+            } catch (error) {
+                dedicated = null;
+            }
         }
 
-        if (canReport(dedicated)) {
-            console.info('Using dedicated state characteristic');
+        if (canRead(dedicated)) {
+            console.info('Reading state from the dedicated state characteristic');
             return dedicated;
         }
-        if (canReport(controlCharacteristic)) {
-            console.info('No dedicated state characteristic, using the control characteristic');
-            return controlCharacteristic;
+
+        const readable = characteristics.find(canRead);
+        if (readable) {
+            console.info(`Reading state from ${readable.uuid}`);
+            return readable;
         }
-        console.warn('Neither characteristic can report state (need notify, indicate or read)');
+
+        console.warn('No readable characteristic; state read-back unavailable');
         return dedicated || controlCharacteristic;
     }
 
@@ -715,9 +739,15 @@ const ble = (() => {
             return;
         }
 
-        if (stateCharacteristic) {
-            stateCharacteristic.removeEventListener('characteristicvaluechanged', handleNotification);
-        }
+        notificationCharacteristics.forEach(characteristic => {
+            characteristic.removeEventListener('characteristicvaluechanged', handleNotification);
+            try {
+                characteristic.stopNotifications().catch(() => {});
+            } catch (error) {
+                console.warn('Could not stop notifications:', error);
+            }
+        });
+        notificationCharacteristics = [];
         clearRequest();
         notificationsEnabled = false;
         stateCharacteristic = null;
@@ -747,11 +777,34 @@ const ble = (() => {
             setStatus('Device: Connecting...');
             const server = await device.gatt.connect();
             const service = await server.getPrimaryService(SERVICE_UUID);
-            controlCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
-            stateCharacteristic = await findStateCharacteristic(service);
-            notificationsEnabled = await enableStateNotifications();
+            let characteristics = [];
+            try {
+                characteristics = await service.getCharacteristics();
+            } catch (error) {
+                console.warn('Could not enumerate characteristics:', error);
+            }
+            characteristics.forEach(characteristic => {
+                console.info(`Characteristic ${characteristic.uuid}`, characteristic.properties);
+            });
+
+            controlCharacteristic = characteristics.find(characteristic =>
+                characteristic.uuid === CHARACTERISTIC_UUID)
+                || await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+            stateCharacteristic = await findStateCharacteristic(service, characteristics);
+
+            /* Make sure the characteristics found above are in the list too. */
+            [controlCharacteristic, stateCharacteristic].forEach(characteristic => {
+                if (characteristic && !characteristics.some(existing =>
+                    existing.uuid === characteristic.uuid)) {
+                    characteristics.push(characteristic);
+                }
+            });
+
+            notificationsEnabled = await enableNotifications(characteristics);
             console.log('Control characteristic properties:', controlCharacteristic.properties);
             console.log('State characteristic properties:', stateCharacteristic && stateCharacteristic.properties);
+            console.log('Notifications enabled:', notificationsEnabled);
 
             device.addEventListener('gattserverdisconnected', resetLink);
             setStatus('Device: Connected!');
@@ -769,6 +822,10 @@ const ble = (() => {
                 console.warn('Cleanup disconnect failed:', disconnectError);
             }
 
+            notificationCharacteristics.forEach(characteristic => {
+                characteristic.removeEventListener('characteristicvaluechanged', handleNotification);
+            });
+            notificationCharacteristics = [];
             notificationsEnabled = false;
             stateCharacteristic = null;
             controlCharacteristic = null;
