@@ -2459,6 +2459,49 @@ const gifPrep = (() => {
         return palette;
     }
 
+    /*
+     * gifenc.applyPalette caches lookups on a 4-bit-per-channel key, so a
+     * single anti-aliased grey pixel can claim the whole near-black bucket and
+     * repaint a frame's background with that colour. Map exact colours
+     * instead, caching on the full RGBA value.
+     */
+    function nearestPaletteIndex(palette, r, g, b, a) {
+        let best = 0;
+        let bestDistance = Infinity;
+        for (let i = 0; i < palette.length; i++) {
+            const color = palette[i];
+            const dr = color[0] - r;
+            const dg = color[1] - g;
+            const db = color[2] - b;
+            const da = (color.length > 3 ? color[3] : 255) - a;
+            const distance = dr * dr + dg * dg + db * db + da * da;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    function indexPixels(pixels, palette, cache) {
+        const indexed = new Uint8Array(CANVAS_SIZE * CANVAS_SIZE);
+        for (let i = 0; i < indexed.length; i++) {
+            const offset = i * 4;
+            const r = pixels[offset];
+            const g = pixels[offset + 1];
+            const b = pixels[offset + 2];
+            const a = pixels[offset + 3];
+            const key = ((r << 24) | (g << 16) | (b << 8) | a) >>> 0;
+            let index = cache.get(key);
+            if (index === undefined) {
+                index = nearestPaletteIndex(palette, r, g, b, a);
+                cache.set(key, index);
+            }
+            indexed[i] = index;
+        }
+        return indexed;
+    }
+
     function quantizeFrames(frames, size) {
         const perFrame = CANVAS_SIZE * CANVAS_SIZE;
         const total = frames.length * perFrame;
@@ -2489,6 +2532,7 @@ const gifPrep = (() => {
         const transparentIndex = palette.length - 1;
         const colorDepth = Math.log2(palette.length);
         const gif = gifenc.GIFEncoder();
+        const colorCache = new Map();
         let lastYield = 0;
 
         for (let index = 0; index < frames.length; index++) {
@@ -2497,7 +2541,7 @@ const gifPrep = (() => {
             }
 
             const frame = frames[index];
-            const indexed = gifenc.applyPalette(frame.pixels, palette, 'rgba4444');
+            const indexed = indexPixels(frame.pixels, palette, colorCache);
 
             gif.writeFrame(indexed, CANVAS_SIZE, CANVAS_SIZE, {
                 palette: index === 0 ? palette : null,
