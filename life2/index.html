@@ -208,6 +208,11 @@
             margin: 25px 0;
             text-align: left;
         }
+        .field-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 12px;
+        }
         label {
             display: block;
             font-size: 14px;
@@ -218,6 +223,31 @@
             display: flex;
             align-items: center;
             gap: 6px;
+        }
+        .rate-group {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+        }
+        .rate-group > label {
+            flex: 0 0 auto;
+            margin-bottom: 0;
+            white-space: nowrap;
+        }
+        .rate-group > .rate-row {
+            flex: 1 1 220px;
+            min-width: 0;
+            justify-content: flex-end;
+            gap: 4px;
+        }
+        .rate-group .step-btn {
+            padding-right: 4px;
+            padding-left: 4px;
+        }
+        .rate-group .rate-field {
+            flex: 0 1 96px;
+            min-width: 60px;
         }
         .step-btn {
             width: auto;
@@ -309,61 +339,63 @@
     </div>
 
     <section class="card tab-panel" id="tab-simulation" role="tabpanel" aria-labelledby="tabBtn-simulation">
-        <div class="control-group">
-            <label id="presetLabel">Preset:</label>
-            <select id="presetDropdown" disabled>
-                <option value="" hidden>Custom</option>
-                <option value="0">Mitosos</option>
-                <option value="1">Coral</option>
-                <option value="2">Fingerpr.</option>
-                <option value="3">Spiral</option>
-                <option value="4">Worm</option>
-                <option value="5">Maze</option>
-                <option value="6">Bubbles</option>
-                <option value="7">Spot/Loop</option>
-                <option value="8">Waves</option>
-                <option value="9">Splotch</option>
-                <option value="10">Solition</option>
-                <option value="11">Dot</option>
-                <option value="12">Stripe</option>
-                <option value="13">X/Wave</option>
-                <option value="14">Mixed</option>
-            </select>
+        <div class="control-group field-grid">
+            <div>
+                <label id="presetLabel" for="presetDropdown">Preset:</label>
+                <select id="presetDropdown" disabled>
+                    <option value="" hidden>Custom</option>
+                    <option value="0">Mitosos</option>
+                    <option value="1">Coral</option>
+                    <option value="2">Fingerpr.</option>
+                    <option value="3">Spiral</option>
+                    <option value="4">Worm</option>
+                    <option value="5">Maze</option>
+                    <option value="6">Bubbles</option>
+                    <option value="7">Spot/Loop</option>
+                    <option value="8">Waves</option>
+                    <option value="9">Splotch</option>
+                    <option value="10">Solition</option>
+                    <option value="11">Dot</option>
+                    <option value="12">Stripe</option>
+                    <option value="13">X/Wave</option>
+                    <option value="14">Mixed</option>
+                </select>
+            </div>
+
+            <div>
+                <label id="spawnChanceLabel" for="spawnChanceDropdown">Spawn Chance</label>
+                <select id="spawnChanceDropdown" disabled>
+                    <option value="0">Never</option>
+                    <option value="1">0.01%</option>
+                    <option value="10">0.10%</option>
+                    <option value="20">0.20%</option>
+                    <option value="25">0.25%</option>
+                    <option value="50">0.50%</option>
+                    <option value="75">0.75%</option>
+                    <option value="100">1.00%</option>
+                    <option value="150">1.50%</option>
+                    <option value="200">2.00%</option>
+                    <option value="250">2.50%</option>
+                    <option value="300">3.00%</option>
+                    <option value="500">5.00%</option>
+                    <option value="750">7.50%</option>
+                    <option value="1000">10.00%</option>
+                    <option value="1250">12.50%</option>
+                    <option value="1500">15.00%</option>
+                    <option value="1750">17.50%</option>
+                    <option value="2000">20.00%</option>
+                    <option value="2500">25.00%</option>
+                    <option value="3000">30.00%</option>
+                    <option value="3500">35.00%</option>
+                    <option value="4000">40.00%</option>
+                    <option value="4500">45.00%</option>
+                    <option value="5000">50.00%</option>
+                </select>
+            </div>
         </div>
 
-        <div class="control-group">
-            <label id="spawnChanceLabel">Spawn Chance</label>
-            <select id="spawnChanceDropdown" disabled>
-                <option value="0">Never</option>
-                <option value="1">0.01%</option>
-                <option value="10">0.10%</option>
-                <option value="20">0.20%</option>
-                <option value="25">0.25%</option>
-                <option value="50">0.50%</option>
-                <option value="75">0.75%</option>
-                <option value="100">1.00%</option>
-                <option value="150">1.50%</option>
-                <option value="200">2.00%</option>
-                <option value="250">2.50%</option>
-                <option value="300">3.00%</option>
-                <option value="500">5.00%</option>
-                <option value="750">7.50%</option>
-                <option value="1000">10.00%</option>
-                <option value="1250">12.50%</option>
-                <option value="1500">15.00%</option>
-                <option value="1750">17.50%</option>
-                <option value="2000">20.00%</option>
-                <option value="2500">25.00%</option>
-                <option value="3000">30.00%</option>
-                <option value="3500">35.00%</option>
-                <option value="4000">40.00%</option>
-                <option value="4500">45.00%</option>
-                <option value="5000">50.00%</option>
-            </select>
-        </div>
-
-        <div class="control-group">
-            <label>Feed Rate</label>
+        <div class="control-group rate-group">
+            <label for="feedRateInput">Feed Rate</label>
             <div class="rate-row">
                 <button type="button" class="step-btn" data-rate="feed" data-delta="-0.10" disabled>−0.10</button>
                 <button type="button" class="step-btn" data-rate="feed" data-delta="-0.01" disabled>−0.01</button>
@@ -376,8 +408,8 @@
             </div>
         </div>
 
-        <div class="control-group">
-            <label>Kill Rate</label>
+        <div class="control-group rate-group">
+            <label for="killRateInput">Kill Rate</label>
             <div class="rate-row">
                 <button type="button" class="step-btn" data-rate="kill" data-delta="-0.10" disabled>−0.10</button>
                 <button type="button" class="step-btn" data-rate="kill" data-delta="-0.01" disabled>−0.01</button>
@@ -2187,9 +2219,9 @@ const modeSelector = (() => {
  *
  *   - frames are composited with the GIF disposal rules, so transparency
  *     looks the way it does in a browser
- *   - the longer edge is scaled to 64, the frame is centred, the rest is
- *     transparent (nearest neighbour for whole-number scales, otherwise
- *     smooth)
+ *   - the frame is cropped to a centred square (the longer edge is clipped
+ *     away) and scaled to 64 (nearest neighbour for whole-number scales,
+ *     otherwise smooth)
  *   - one global colour table is written; index 0 is opaque black because the
  *     decoder paints disposal-2 holes with the background index, and the last
  *     index is the 1-bit transparent colour
@@ -2330,16 +2362,15 @@ const gifPrep = (() => {
         target.height = CANVAS_SIZE;
         const targetContext = target.getContext('2d', { willReadFrequently: true });
 
-        const longest = Math.max(width, height);
-        const scale = CANVAS_SIZE / longest;
-        const drawWidth = Math.max(1, Math.min(CANVAS_SIZE, Math.round(width * scale)));
-        const drawHeight = Math.max(1, Math.min(CANVAS_SIZE, Math.round(height * scale)));
-        const offsetX = Math.floor((CANVAS_SIZE - drawWidth) / 2);
-        const offsetY = Math.floor((CANVAS_SIZE - drawHeight) / 2);
+        /* Clip to a centred square: the shorter edge fills the canvas and the
+           overhanging sides (or top/bottom) are dropped, never letterboxed. */
+        const side = Math.min(width, height);
+        const sourceX = Math.floor((width - side) / 2);
+        const sourceY = Math.floor((height - side) / 2);
 
         /* Nearest neighbour keeps pixel art crisp, but only when the ratio is
            a whole number; otherwise smooth scaling looks better. */
-        const pixelArt = CANVAS_SIZE % longest === 0 || longest % CANVAS_SIZE === 0;
+        const pixelArt = CANVAS_SIZE % side === 0 || side % CANVAS_SIZE === 0;
         targetContext.imageSmoothingEnabled = !pixelArt;
         if (!pixelArt) {
             targetContext.imageSmoothingQuality = 'high';
@@ -2374,7 +2405,10 @@ const gifPrep = (() => {
 
             sourceContext.putImageData(image, 0, 0);
             targetContext.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-            targetContext.drawImage(source, offsetX, offsetY, drawWidth, drawHeight);
+            targetContext.drawImage(
+                source, sourceX, sourceY, side, side,
+                0, 0, CANVAS_SIZE, CANVAS_SIZE
+            );
 
             const pixels = targetContext.getImageData(0, 0, CANVAS_SIZE, CANVAS_SIZE).data;
             thresholdAlpha(pixels);
