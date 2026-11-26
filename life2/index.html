@@ -443,6 +443,22 @@
         </div>
 
         <div class="control-group">
+            <label for="gifBrightness">Brightness</label>
+            <select id="gifBrightness">
+                <option value="10">10%</option>
+                <option value="20">20%</option>
+                <option value="30">30%</option>
+                <option value="40">40%</option>
+                <option value="50">50%</option>
+                <option value="60">60%</option>
+                <option value="70">70%</option>
+                <option value="80">80%</option>
+                <option value="90">90%</option>
+                <option value="100" selected>100%</option>
+            </select>
+        </div>
+
+        <div class="control-group">
             <label for="gifPlaybackSpeed">Playback Speed</label>
             <select id="gifPlaybackSpeed" disabled>
                 <option value="10">10%</option>
@@ -2329,6 +2345,36 @@ const gifPrep = (() => {
         }
     }
 
+    /*
+     * Dimming is a plain scale of the sRGB channels. HSV would give exactly
+     * the same numbers (scaling every channel by k scales V by k and leaves
+     * H and S alone) at the cost of two conversions per pixel, so the table
+     * is built once per conversion and reused for every frame. 100% returns
+     * null: scaling by one is an exact identity, and skipping it keeps the
+     * untouched 64x64 passthrough byte-for-byte identical.
+     */
+    function dimTable(factor) {
+        if (factor >= 1) {
+            return null;
+        }
+        const table = new Uint8ClampedArray(256);
+        for (let i = 0; i < 256; i++) {
+            table[i] = i * factor;
+        }
+        return table;
+    }
+
+    function dimPixels(pixels, table) {
+        if (!table) {
+            return;
+        }
+        for (let i = 0; i < pixels.length; i += 4) {
+            pixels[i] = table[pixels[i]];
+            pixels[i + 1] = table[pixels[i + 1]];
+            pixels[i + 2] = table[pixels[i + 2]];
+        }
+    }
+
     function clearFrameRect(buffer, canvasWidth, frame) {
         const left = Math.max(0, Math.min(frame.x, canvasWidth));
         const right = Math.max(left, Math.min(frame.x + frame.width, canvasWidth));
@@ -2388,7 +2434,7 @@ const gifPrep = (() => {
     }
 
     async function decodeFrames(reader, options) {
-        const { width, height, frameCount, report, shouldCancel } = options;
+        const { width, height, frameCount, report, shouldCancel, brightnessTable } = options;
 
         const source = document.createElement('canvas');
         source.width = width;
@@ -2453,6 +2499,7 @@ const gifPrep = (() => {
 
             const pixels = targetContext.getImageData(0, 0, CANVAS_SIZE, CANVAS_SIZE).data;
             thresholdAlpha(pixels);
+            dimPixels(pixels, brightnessTable);
 
             frames.push({ pixels, delay: info.delay });
             previous = info;
@@ -2629,6 +2676,12 @@ const gifPrep = (() => {
         const report = options.onProgress || (() => {});
         const shouldCancel = options.shouldCancel || (() => false);
 
+        const requested = Number(options.brightness);
+        const brightness = Number.isFinite(requested)
+            ? Math.min(100, Math.max(0, Math.round(requested)))
+            : 100;
+        const brightnessTable = dimTable(brightness / 100);
+
         if (file.size > MAX_SOURCE_BYTES) {
             throw fail(`That file is ${formatSize(file.size)}; the largest source is 64 MB.`);
         }
@@ -2671,7 +2724,10 @@ const gifPrep = (() => {
             );
         }
 
-        if (width === CANVAS_SIZE && height === CANVAS_SIZE) {
+        /* A 64x64 GIF is uploaded untouched only at full brightness: dimming
+           has to repaint every pixel, so a dimmed file takes the normal
+           decode-and-re-encode route below. */
+        if (brightnessTable === null && width === CANVAS_SIZE && height === CANVAS_SIZE) {
             if (data.length > MAX_OUTPUT_BYTES) {
                 throw fail(
                     `Already 64 × 64, but it is ${formatSize(data.length)} — ` +
@@ -2691,6 +2747,7 @@ const gifPrep = (() => {
                 processed: false,
                 colors: null,
                 reduced: false,
+                brightness,
                 ...countDelays(reader, frameCount)
             };
         }
@@ -2704,7 +2761,8 @@ const gifPrep = (() => {
                 height,
                 frameCount,
                 report,
-                shouldCancel
+                shouldCancel,
+                brightnessTable
             });
         } catch (error) {
             if (error === CANCELLED) {
@@ -2765,6 +2823,7 @@ const gifPrep = (() => {
             processed: true,
             colors: output.colors,
             reduced: output.colors !== COLOR_ATTEMPTS[0],
+            brightness,
             zeroDelayFrames: frames.reduce((count, frame) => count + (frame.delay === 0 ? 1 : 0), 0)
         };
     }
@@ -2880,11 +2939,19 @@ const gifUpload = (() => {
         status.classList.toggle('error', Boolean(isError));
     }
 
+    /* Brightness is a conversion setting, so it stays usable while the device
+       is disconnected; only a running conversion or upload blocks it. */
+    function brightnessPercent() {
+        const value = Number($('gifBrightness').value);
+        return Number.isFinite(value) ? Math.min(100, Math.max(10, value)) : 100;
+    }
+
     function refreshControls() {
         const connected = ble.hasControl();
         const working = busy || preparing;
         $('gifFileInput').disabled = working;
         $('gifChooseBtn').disabled = working;
+        $('gifBrightness').disabled = working;
         $('gifStartBtn').disabled = working || !fileBytes || !connected;
         $('gifCancelBtn').disabled = !working;
         modeSelector.setUploading(working);
@@ -2902,8 +2969,9 @@ const gifUpload = (() => {
             return `${file.name} (${formatBytes(result.size)}) — already 64 × 64`;
         }
         const colors = result.reduced ? ', 64 colours' : '';
+        const brightness = result.brightness < 100 ? `, ${result.brightness}% brightness` : '';
         return `${file.name} (${formatBytes(result.sourceSize)} → ${formatBytes(result.size)}, ` +
-            `64 × 64, ${result.frameCount} frames${colors})`;
+            `64 × 64, ${result.frameCount} frames${colors}${brightness})`;
     }
 
     function resultMessage(result) {
@@ -2918,6 +2986,9 @@ const gifUpload = (() => {
         }
         if (result.reduced) {
             parts.push('Reduced to 64 colours to stay under 1 MiB.');
+        }
+        if (result.processed && result.brightness < 100) {
+            parts.push(`Dimmed to ${result.brightness}% brightness.`);
         }
         if (result.zeroDelayFrames > 0) {
             const frames = result.zeroDelayFrames === 1 ? 'frame has' : 'frames have';
@@ -3325,7 +3396,8 @@ const gifUpload = (() => {
         try {
             const result = await gifPrep.prepare(file, {
                 onProgress: paintPrepProgress,
-                shouldCancel: () => stopRequested
+                shouldCancel: () => stopRequested,
+                brightness: brightnessPercent()
             });
 
             if (stopRequested) {
@@ -3397,6 +3469,15 @@ const gifUpload = (() => {
             const file = (event.target.files && event.target.files[0]) || null;
             event.target.value = '';
             void selectFile(file);
+        });
+
+        /* The prepared bytes are already dimmed, so a new value re-runs the
+           conversion on the file that is currently chosen. */
+        $('gifBrightness').addEventListener('change', () => {
+            if (!selectedFile || busy || preparing) {
+                return;
+            }
+            void selectFile(selectedFile);
         });
 
         $('gifStartBtn').addEventListener('click', startUpload);
